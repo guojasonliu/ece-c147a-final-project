@@ -56,3 +56,6 @@ wikitext-103-raw*
 
 # To prevent git-lfs from producing bugs
 models
+
+# Disable github workflows
+.github/workflows
