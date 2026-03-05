@@ -7,12 +7,13 @@
 import logging
 import os
 import pprint
+import sys
+import sysconfig
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import hydra
-import pytorch_lightning as pl
 from hydra.utils import get_original_cwd, instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
@@ -21,6 +22,42 @@ from emg2qwerty.transforms import Transform
 
 
 log = logging.getLogger(__name__)
+
+
+def _prefer_wheel_cudnn() -> None:
+    # Prefer wheel-provided cuDNN over /usr/local/cuda to avoid mixed-library ABI
+    # issues (e.g. undefined symbols between cudnn train/infer shared objects).
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    cudnn_lib_dir = purelib / "nvidia" / "cudnn" / "lib"
+    if not cudnn_lib_dir.is_dir():
+        return
+
+    current = os.environ.get("LD_LIBRARY_PATH", "")
+    paths = [p for p in current.split(os.pathsep) if p]
+    cudnn_lib = str(cudnn_lib_dir)
+    updated_paths = [cudnn_lib, *[p for p in paths if p != cudnn_lib]]
+    updated_ld_library_path = os.pathsep.join(updated_paths)
+    if current == updated_ld_library_path:
+        return
+
+    # LD_LIBRARY_PATH must be set before process start to affect dlopen lookup.
+    # Re-exec once with updated environment so torch/cudnn load the right libs.
+    if os.environ.get("EMG2QWERTY_CUDNN_REEXECED") == "1":
+        os.environ["LD_LIBRARY_PATH"] = updated_ld_library_path
+        return
+
+    os.environ["LD_LIBRARY_PATH"] = updated_ld_library_path
+    os.environ["EMG2QWERTY_CUDNN_REEXECED"] = "1"
+
+    # Preserve original invocation mode (`-m`, script path, `-c`, flags, args).
+    # Python 3.10+ exposes this via sys.orig_argv.
+    argv = getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv]
+    os.execvpe(sys.executable, argv, os.environ)
+
+
+_prefer_wheel_cudnn()
+
+import pytorch_lightning as pl
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="base")
