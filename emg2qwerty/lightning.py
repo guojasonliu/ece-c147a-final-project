@@ -154,6 +154,8 @@ class TDSConvCTCModule(pl.LightningModule):
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
+        self.optimizer_config = optimizer
+        self.lr_scheduler_config = lr_scheduler
 
         num_features = self.NUM_BANDS * mlp_features[-1]
 
@@ -267,8 +269,8 @@ class TDSConvCTCModule(pl.LightningModule):
     def configure_optimizers(self) -> dict[str, Any]:
         return utils.instantiate_optimizer_and_scheduler(
             self.parameters(),
-            optimizer_config=self.hparams.optimizer,
-            lr_scheduler_config=self.hparams.lr_scheduler,
+            optimizer_config=self.optimizer_config,
+            lr_scheduler_config=self.lr_scheduler_config,
         )
 
 class LSTMCTCModule(TDSConvCTCModule):
@@ -290,6 +292,8 @@ class LSTMCTCModule(TDSConvCTCModule):
     ) -> None:
         pl.LightningModule.__init__(self)
         self.save_hyperparameters()
+        self.optimizer_config = optimizer
+        self.lr_scheduler_config = lr_scheduler
 
         num_features = self.NUM_BANDS * mlp_features[-1]
 
@@ -364,6 +368,5 @@ class LSTMCTCModule(TDSConvCTCModule):
 
         self.log(f"{phase}/loss", loss, batch_size=N, sync_dist=True)
         return loss
-
 
 
