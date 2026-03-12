@@ -22,6 +22,7 @@ from emg2qwerty.charset import charset
 from emg2qwerty.data import LabelData, WindowedEMGDataset
 from emg2qwerty.metrics import CharacterErrorRates
 from emg2qwerty.modules import (
+    LSTMEncoder,
     MultiBandRotationInvariantMLP,
     SpectrogramNorm,
     TemporalTransformerEncoder,
@@ -151,6 +152,8 @@ class TDSConvCTCModule(pl.LightningModule):
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
+        self.optimizer_config = optimizer
+        self.lr_scheduler_config = lr_scheduler
 
         num_features = self.NUM_BANDS * mlp_features[-1]
 
@@ -264,8 +267,113 @@ class TDSConvCTCModule(pl.LightningModule):
     def configure_optimizers(self) -> dict[str, Any]:
         return utils.instantiate_optimizer_and_scheduler(
             self.parameters(),
-            optimizer_config=self.hparams.optimizer,
-            lr_scheduler_config=self.hparams.lr_scheduler,
+            optimizer_config=self.optimizer_config,
+            lr_scheduler_config=self.lr_scheduler_config,
+        )
+
+
+class LSTMCTCModule(TDSConvCTCModule):
+    NUM_BANDS = 2
+    ELECTRODE_CHANNELS = 16
+
+    def __init__(
+        self,
+        in_features: int,
+        mlp_features: Sequence[int],
+        lstm_hidden_size: int,
+        lstm_num_layers: int,
+        lstm_dropout: float,
+        lstm_output_size: int,
+        lstm_output_dropout: float,
+        optimizer: DictConfig,
+        lr_scheduler: DictConfig,
+        decoder: DictConfig,
+    ) -> None:
+        pl.LightningModule.__init__(self)
+        self.save_hyperparameters()
+        self.optimizer_config = optimizer
+        self.lr_scheduler_config = lr_scheduler
+
+        num_features = self.NUM_BANDS * mlp_features[-1]
+
+        self.features = nn.Sequential(
+            SpectrogramNorm(channels=self.NUM_BANDS * self.ELECTRODE_CHANNELS),
+            MultiBandRotationInvariantMLP(
+                in_features=in_features,
+                mlp_features=mlp_features,
+                num_bands=self.NUM_BANDS,
+            ),
+            nn.Flatten(start_dim=2),
+        )
+        self.encoder = LSTMEncoder(
+            input_size=num_features,
+            hidden_size=lstm_hidden_size,
+            num_layers=lstm_num_layers,
+            dropout=lstm_dropout,
+            output_size=lstm_output_size,
+            output_dropout=lstm_output_dropout,
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(self.encoder.output_size, charset().num_classes),
+            nn.LogSoftmax(dim=-1),
+        )
+
+        self.ctc_loss = nn.CTCLoss(blank=charset().null_class)
+        self.decoder = instantiate(decoder)
+
+        metrics = MetricCollection([CharacterErrorRates()])
+        self.metrics = nn.ModuleDict(
+            {
+                f"{phase}_metrics": metrics.clone(prefix=f"{phase}/")
+                for phase in ["train", "val", "test"]
+            }
+        )
+
+    def forward(
+        self, inputs: torch.Tensor, input_lengths: torch.Tensor
+    ) -> torch.Tensor:
+        encoded = self.encoder(self.features(inputs), input_lengths=input_lengths)
+        return self.classifier(encoded)
+
+    def _step(
+        self, phase: str, batch: dict[str, torch.Tensor], *args, **kwargs
+    ) -> torch.Tensor:
+        inputs = batch["inputs"]
+        targets = batch["targets"]
+        input_lengths = batch["input_lengths"]
+        target_lengths = batch["target_lengths"]
+        N = len(input_lengths)
+
+        emissions = self.forward(inputs, input_lengths=input_lengths)
+        emission_lengths = input_lengths
+
+        loss = self.ctc_loss(
+            log_probs=emissions,
+            targets=targets.transpose(0, 1),
+            input_lengths=emission_lengths,
+            target_lengths=target_lengths,
+        )
+
+        predictions = self.decoder.decode_batch(
+            emissions=emissions.detach().cpu().numpy(),
+            emission_lengths=emission_lengths.detach().cpu().numpy(),
+        )
+
+        metrics = self.metrics[f"{phase}_metrics"]
+        targets = targets.detach().cpu().numpy()
+        target_lengths = target_lengths.detach().cpu().numpy()
+        for i in range(N):
+            target = LabelData.from_labels(targets[: target_lengths[i], i])
+            metrics.update(prediction=predictions[i], target=target)
+
+        self.log(f"{phase}/loss", loss, batch_size=N, sync_dist=True)
+        return loss
+
+    def configure_optimizers(self) -> dict[str, Any]:
+        return utils.instantiate_optimizer_and_scheduler(
+            self.parameters(),
+            optimizer_config=self.optimizer_config,
+            lr_scheduler_config=self.lr_scheduler_config,
         )
 
 
@@ -288,6 +396,8 @@ class TransformerCTCModule(pl.LightningModule):
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
+        self.optimizer_config = optimizer
+        self.lr_scheduler_config = lr_scheduler
 
         frontend_features = self.NUM_BANDS * mlp_features[-1]
 
@@ -401,6 +511,6 @@ class TransformerCTCModule(pl.LightningModule):
     def configure_optimizers(self) -> dict[str, Any]:
         return utils.instantiate_optimizer_and_scheduler(
             self.parameters(),
-            optimizer_config=self.hparams.optimizer,
-            lr_scheduler_config=self.hparams.lr_scheduler,
+            optimizer_config=self.optimizer_config,
+            lr_scheduler_config=self.lr_scheduler_config,
         )
