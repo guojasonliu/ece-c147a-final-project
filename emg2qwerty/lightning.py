@@ -90,10 +90,10 @@ class WindowedEMGDataModule(pl.LightningDataModule):
                 WindowedEMGDataset(
                     hdf5_path,
                     transform=self.test_transform,
-                    # Use the same windowing regime as train/val
-                    # Full-session inference caused bad performance for transformer (high insertion rate at test time)
-                    window_length=self.window_length,
-                    padding=self.padding,
+                    # Feed the entire session at once without windowing/padding
+                    # at test time for more realism
+                    window_length=None,
+                    padding=(0, 0),
                     jitter=False,
                 )
                 for hdf5_path in self.test_sessions
@@ -123,7 +123,41 @@ class WindowedEMGDataModule(pl.LightningDataModule):
         )
 
     def test_dataloader(self) -> DataLoader:
-        # Test now matches train/val windowing, so use configured batch size
+        # Test dataset does not involve windowing and entire sessions are
+        # fed at once. Limit batch size to 1 to fit within GPU memory and
+        # avoid any influence of padding (while collating multiple batch items)
+        # in test scores.
+        return DataLoader(
+            self.test_dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=self.num_workers,
+            collate_fn=WindowedEMGDataset.collate,
+            pin_memory=True,
+            persistent_workers=True,
+        )
+
+
+class TransformerWindowedEMGDataModule(WindowedEMGDataModule):
+    def setup(self, stage: str | None = None) -> None:
+        super().setup(stage)
+        self.test_dataset = ConcatDataset(
+            [
+                WindowedEMGDataset(
+                    hdf5_path,
+                    transform=self.test_transform,
+                    # Full-session inference caused bad performance for transformer
+                    # (high insertion rate at test time), so keep test windowing
+                    # aligned with train/val.
+                    window_length=self.window_length,
+                    padding=self.padding,
+                    jitter=False,
+                )
+                for hdf5_path in self.test_sessions
+            ]
+        )
+
+    def test_dataloader(self) -> DataLoader:
         return DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
