@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from collections.abc import Sequence
+import math
 
 import torch
 from torch import nn
@@ -278,3 +279,92 @@ class TDSConvEncoder(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.tds_conv_blocks(inputs)  # (T, N, num_features)
+
+
+class SinusoidalPositionalEncoding(nn.Module):
+    """Sine/cosine positional encoding for temporal inputs of shape (T, N, C)."""
+
+    def __init__(self, num_features: int, dropout: float) -> None:
+        super().__init__()
+        self.num_features = num_features
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        T, _, C = inputs.shape
+        assert C == self.num_features
+
+        device = inputs.device
+        dtype = inputs.dtype
+
+        # Build frequency scales
+        position = torch.arange(T, device=device, dtype=dtype).unsqueeze(1)  # (T, 1)
+        div_term = torch.exp(
+            torch.arange(0, C, 2, device=device, dtype=dtype)
+            * (-math.log(10000.0) / C)
+        )  # (ceil(C/2),)
+
+        # Create encoding matrix
+        pos_encoding = torch.zeros(T, C, device=device, dtype=dtype)
+        pos_encoding[:, 0::2] = torch.sin(position * div_term)
+        if C > 1:
+            pos_encoding[:, 1::2] = torch.cos(position * div_term[: C // 2])
+
+        return self.dropout(inputs + pos_encoding.unsqueeze(1))
+
+
+class TemporalTransformerEncoder(nn.Module):
+    """Transformer encoder over temporal axis for inputs of shape (T, N, C)."""
+
+    def __init__(
+        self,
+        num_features: int,
+        d_model: int,
+        num_layers: int,
+        num_heads: int,
+        dim_feedforward: int,
+        dropout: float,
+        activation: str,
+        norm_first: bool,
+    ) -> None:
+        super().__init__()
+        self.input_projection = (
+            nn.Identity()
+            if num_features == d_model
+            else nn.Linear(num_features, d_model)
+        )
+        self.positional_encoding = SinusoidalPositionalEncoding(
+            num_features=d_model,
+            dropout=dropout,
+        )
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            batch_first=False,
+            norm_first=norm_first,
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer=encoder_layer,
+            num_layers=num_layers,
+            norm=nn.LayerNorm(d_model),
+        )
+
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        input_lengths: torch.Tensor | None,
+    ) -> torch.Tensor:
+        x = self.input_projection(inputs)
+        x = self.positional_encoding(x)
+
+        # padding step
+        src_key_padding_mask = None
+        if input_lengths is not None:
+            T = x.shape[0]
+            time = torch.arange(T, device=x.device).unsqueeze(0)  # (1, T)
+            src_key_padding_mask = time >= input_lengths.to(x.device).unsqueeze(1)  # (N, T)
+
+        # Use nn.TransformerEncoder to encode inputs
+        return self.encoder(x, src_key_padding_mask=src_key_padding_mask)  # (T, N, d_model)
