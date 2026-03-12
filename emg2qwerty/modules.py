@@ -368,3 +368,36 @@ class TemporalTransformerEncoder(nn.Module):
 
         # Use nn.TransformerEncoder to encode inputs
         return self.encoder(x, src_key_padding_mask=src_key_padding_mask)  # (T, N, d_model)
+class LSTMEncoder(nn.Module):
+    """A LSTM sequence encoder"""
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int,
+        dropout: float,
+        output_size: int,
+        output_dropout: float,
+    ) -> None:
+        super().__init__()
+        self.output_size = output_size
+
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout if num_layers > 1 else 0.0,
+            batch_first=False,
+        )
+        self.proj = nn.Linear(hidden_size, output_size)
+        self.output_dropout = nn.Dropout(output_dropout)
+
+    def forward(self, inputs: torch.Tensor, input_lengths: torch.Tensor) -> torch.Tensor:
+        # pack
+        temp = nn.utils.rnn.pack_padded_sequence(inputs,lengths=input_lengths.detach().cpu(),enforce_sorted=False)
+        # forward
+        res, _ = self.lstm(temp)
+        # unpack
+        outputs, _ = nn.utils.rnn.pad_packed_sequence(res,total_length=inputs.shape[0])
+        return self.output_dropout(self.proj(outputs))
