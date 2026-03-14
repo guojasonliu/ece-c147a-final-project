@@ -1,0 +1,219 @@
+\documentclass{article}
+
+% Pass options to natbib if necessary
+% \PassOptionsToPackage{numbers, compress}{natbib}
+
+% Use the neurips_2024 style. 
+% For submission, leave as is (anonymized). 
+% For a preprint (e.g., arXiv), use [preprint]. 
+% For the final version, use [final].
+% \PassOptionsToPackage{options}{natbib}
+\usepackage[final]{neurips_2024}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{graphicx}       % for figures
+
+% for plot
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit, backgrounds}
+
+% \newcommand{\bomin}[1]{{\color{blue}Bomin: #1}}
+% \newcommand{\helen}[1]{{\color{red}Helen: #1}}
+
+\title{Predicting Keystrokes from Electromyography Signals with CNN, LSTM, and Transformer Models}
+
+% The \author macro works with any number of authors.
+% For the initial submission, keep this commented out or use anonymous placeholders 
+% to maintain the double-blind review process.
+\author{
+  Jason Liu \\
+  UCLA \\
+  \texttt{liug26@g.ucla.edu}
+  \And
+  Zixiang Ji \\
+  UCLA \\
+  \texttt{jerryji040506@g.ucla.edu}
+  \And
+  Bomin Wei \\
+  UCLA \\
+  \texttt{davidwei23@g.ucla.edu}
+  \And
+  Hanzhang Liu \\
+  UCLA \\
+  \texttt{helenwolfie@g.ucla.edu}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+In this project, we study the emg2qwerty task with the goal of minimizing Character Error Rate (CER) for EMG-to-text decoding. We compare three sequence modeling architectures: a CNN, an LSTM, and a Transformer, all trained with CTC loss. We also perform an ablation study on the number of available EMG channels and evaluate a Swin-Transformer variant as an additional architecture. Our results show a consistent improvement from CNN to LSTM to Transformer. The baseline CNN achieves a CER of 21.591, the LSTM reduces it to 16.793, and the Transformer achieves the best overall CER of 13.188. We also find that increasing the number of active EMG channels substantially improves decoding accuracy. Although the Swin-Transformer changes the distribution of error types, it does not outperform the standard Transformer. Overall, our findings suggest that accurate EMG-to-text decoding benefits from both stronger temporal modeling and richer multichannel input representations.
+
+\end{abstract}
+
+\section{Introduction}
+Decoding text from surface electromyography (sEMG) is an important step toward non-invasive human-computer interfaces. Because sEMG captures muscle activity from the forearm and wrist during typing, it provides a signal source for inferring intended keystrokes without relying on physical key presses alone. The recently released emg2qwerty dataset offers a large-scale benchmark for this task and enables a systematic study of how neural sequence models can map EMG signals to character sequences \cite{emg2qwerty_neurips2024}.
+
+In this project, our primary goal is to minimize Character Error Rate (CER) for the EMG-to-text decoding task. A successful model must not only extract useful local signal patterns but also capture temporal dependencies across multiple timesteps. Hence, we design our study as a progression of increasingly expressive temporal models. We begin with the provided convolutional baseline, which learns from the feature vector at each time step but is limited in modeling long-range temporal dependencies \cite{emg2qwerty_neurips2024}. We then introduce an LSTM-based model, which adds a recurrent hidden state to capture longer-term patterns from earlier timesteps \cite{6795963}. This design is motivated by the intuition that neighboring keystrokes and muscle activations are not independent, and that preceding sequential context may improve decoding accuracy. Finally, we evaluate a Transformer-based model, which replaces recurrence with self-attention and allows more flexible modeling of long-range dependencies \cite{vaswani2017attention}. To further explore alternative attention-based architectures, we also evaluate a Swin-Transformer variant, which uses hierarchical window-based attention to emphasize local structure while still modeling broader temporal context.
+
+In addition to comparing model architectures, we perform an ablation study on the number of available EMG channels to examine how much decoding performance depends on the richness of the input signal itself. Our results show a clear improvement across architectures, with the test CER decreasing from 21.591 for the baseline CNN to 16.793 for the LSTM and further to 13.188 for the Transformer, which achieved the best overall performance among the models we tested. We also find that increasing the number of active EMG channels substantially improves decoding accuracy. Although the Swin-Transformer changes the distribution of error types, it does not outperform the standard Transformer in overall CER. Together, these findings suggest that accurate EMG-to-text decoding benefits from both stronger temporal sequence modeling and sufficiently rich multichannel input representations.
+
+
+
+%% Use this section to set up and motivate the specific questions and techniques you pursued. If you are working on the emg2qwerty project, focus on your specific angle—for example, minimizing Character Error Rate (CER) for a single subject or maximizing generalization with minimal data. If this is a custom project, provide brief background and establish the baselines used for comparison.
+
+\section{Methods}
+
+\subsection{Baseline Convolution Model}
+
+
+We use a convolution-based model as our baseline \cite{vaswani2017attention}. Our baseline first takes EMG spectral features as input, then applies convolutional layers to learn local patterns across time, and finally uses a CTC classification head to predict the output character sequence. After 150 epoch training, the baseline CNN achieved a CER of 21.591, along with DER 2.248, IER 4.690, and SER 14.653. These results show that the convolution model can already capture useful typing-related information from EMG signals and serves as a strong baseline for comparison. However, the CNN mainly captures local temporal dependencies through a fixed receptive field, which may limit its ability to model longer-range sequential patterns. Since EMG typing signals may depend on broader temporal context, this motivates us to explore models for stronger sequence modeling.
+
+\subsection{LSTM}
+
+Although the previous convolution approach learns from the feature vector at each time step, it fails to capture long-term patterns, which might contain useful latent information for prediction. For example, when contestants type neighboring characters, their muscle activation levels might be highly related. Therefore, we implement an LSTM architecture in order to harness the sequential nature of keyboard activities. We maintain a recurrent hidden state that summarizes the past context, which allows the model to use both the current EMG signal input and to consult the preceding latent understanding in hidden state for prediction. Following the overall structure, the model consists of three main components: feature extraction layer (the same as the convolution approach), a sequence encoder, and a CTC classification head.  
+
+\subsubsection{LSTM Encoder}
+
+The key component is the LSTM encoder layer. The encoder is a 2-layer LSTM with hidden size 256 and dropout 0.2 applied between layers. To properly handle variable-length input sequences, we use packed sequences so that padded frames do not affect recurrent updates. 
+
+The output of the LSTM layer is then passed to a classification head, which consists of a linear layer mapping the 256-dimensional hidden states to 384 dimensions, followed by an output dropout layer with rate 0.2, for prediction that outputs a class label.
+
+\subsubsection{Training parameters}
+
+We use the CTC loss function to train the model with 32 batch sizes and 150 training epochs. For optimization, we use the Adam optimizer with a learning rate of $10^{-3}$. The main parameter is a 2-layer LSTM with hidden size 256.
+
+\subsection{Transformer}
+
+For our final model, we selected a Transformer sequence model for EMG-to-text decoding, with a CTC loss for training and a CTC beam-search decoder for testing. 
+
+\subsubsection{Intuition}
+
+The primary inspiration for using a Transformer model is that it:
+1. Has an attention mechanism that is known to be effective at handling long sequences
+2. Has more parameters and is more complex, which can bring better performance
+
+\subsubsection{Model}
+
+\input{figures/transformer_arch}
+
+On a high level, the model has a structure:
+EMG spectrogram inputs → feature extraction → temporal Transformer encoder → linear -> LogSoftmax → CTC loss / CTC beam decoding
+
+\paragraph{Feature extraction}
+
+The step firstly normalizes the spectrogram features, then using a MultiBandRotationInvariantMLP processes the EMG inputs in a way that is more robust to electrode/channel variation, then finally output is flattened across bands into a per-timestep vector. This intuition behind this structure is to pre-process raw EMG spectrogram features which are structured and noisy. This can make the attention layers to learn more stable and cleaner inputs. 
+
+\paragraph{Temporal encoder}
+
+This is the core temporal component. It lets each timestep attend to other timesteps, which is useful because patterns depend on broader time windows, including past values, not just the current value. 
+
+\paragraph{CTC beam decoding}
+
+At inference time, predictions are decoded using a CTC beam-search decoder plus a character language model, because raw CTC emissions need to be collapsed into a valid text sequence and beam decoding usually gives better transcription quality than greedy decoding. 
+
+\subsubsection{Training Parameters}
+
+We use the CTC loss function to train the model with 32 batch size and 150 training epochs. For optimization, we use the AdamW optimizer with a learning rate of $10^{-3}$. We also use dropout = 0.2 to further regularize the model.
+
+\section{Results}
+
+% State the results of your experiments clearly. Use tables and figures where appropriate to show performance metrics (e.g., accuracy, CER, or F1-score) across different conditions or models. %
+
+\subsection{Experiment Setup}
+
+We conduct our experiments on the emg2qwerty benchmark \cite{emg2qwerty_neurips2024}. All models were trained on a single Tesla T4 GPU for a maximum of 150 epochs. The settings for the different architectures are introduced in the previous sections.
+
+We evaluate model performance primarily using Character Error Rate (CER), which measures the overall transcription error at the character level. To better understand the types of mistakes made by each model, we also report Deletion Error Rate (DER), Insertion Error Rate (IER), and Substitution Error Rate (SER), which quantify the proportions of deleted, inserted, and substituted characters, respectively. Together, these metrics provide a more detailed view of model behavior beyond the overall CER.
+
+\subsection{Result}
+
+Below are the the performance metrics (CER, DER, IER, SER) of each of the models we experimented, trained to a maximum of 150 epochs. 
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+Model &
+\# Param &
+CER $\downarrow$ &
+DER $\downarrow$ &
+IER $\downarrow$ &
+SER $\downarrow$ \\
+\midrule
+Baseline (CNN) & 5.3M & 21.591 & 2.248 & 4.690 & 14.653 \\
+LSTM & 2.1M & 16.793 & 1.621 & \textbf{3.220} & 11.952 \\
+Transformer & 3.6M & \textbf{13.188} & \textbf{1.278} & 6.345 & \textbf{5.565} \\
+\bottomrule
+\end{tabular}
+\vspace{0.2cm}
+\caption{Performance of Different Model Architectures and Combinations (150 epochs)}
+\label{tab:result1}
+\end{table}
+
+It can be seen that the Transformer model achieved the best test CER performance of 13.188.
+
+\section{Discussion}
+
+\subsection{Relationship between the number of electrode channels and decoding performance (CER)}
+We study how the number of active input EMG channels affects the test performance of the model. In this ablation study, we choose the provided convolution model as the baseline model. The dataset contains 2 wrists/bands: left and right. Each wrist has 16 electrode channels. Therefore, there are 32 channels in total. For each $k$ from 1 to 16, we keep the first $k$ channels per wrist and zero out the rest, then measure decoding performance (CER) on the fixed trained model.
+
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/cer_vs_channels.pdf}
+    \caption{Effect of the number of active EMG channels on decoding performance (CER) for Baseline CNN model. Only first k channels are preserved.}
+    \label{fig:channel_ablation}
+\end{figure}
+
+As shown in Figure 1, the performance of the convolution baseline model increases as more channels are provided -- CER significantly drops from 100\% with only 1 channel per wrist to 21.59\% when all 16 channels per wrist are used. This indicates that the model has effectively utilized the information across all channels to make good prediction. It is not hard to tell that preserving more input channels generally leads to better decoding performance, although the extra gains becomes flatten as k gets closer to 16 . In all, based on the result of this study, we continue to include all 32 channel inputs when training the rest of the models, including LSTM and transformer.
+
+\subsection{Ablation Study for Alternative Architectures}
+
+We additionally experimented with two alternative architectures beyond the standard Transformer: a CNN+Transformer hybrid model and a Swin-Transformer model \cite{liu2021swin}. Our motivation was to test whether adding stronger local inductive bias could further improve EMG-to-text decoding. The CNN+Transformer was designed to combine onvolutional local feature extraction with transformer-based sequence modeling, while the Swin-Transformer was intended to introduce hierarchical window-based attention for capturing structured local temporal patterns. More broadly, we wanted to examine whether architectures with additional locality or hierarchy could provide a better inductive bias than the standard global self-attention encoder.
+
+\newcommand{\pos}[1]{\textcolor{green!60!black}{#1}}
+\newcommand{\negval}[1]{\textcolor{red!70!black}{#1}}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccccc}
+\toprule
+Model &
+\# Param &
+CER $\downarrow$ &
+DER $\downarrow$ &
+IER $\downarrow$ &
+SER $\downarrow$ \\
+\midrule
+Baseline (CNN) & 5.3M & 21.591 & 2.248 & 4.690 & 14.653 \\
+Transformer (Current Best) & 3.6M & \textbf{13.188} & \textbf{1.278} & 6.345 & \textbf{5.565} \\
+CNN + Transformer & 12.1 M & 15.093 & 1.343 & 4.461 & 9.290 \\
+\quad $\Delta$ (\textit{vs Transformer}) & & \negval{+1.905} & \negval{+0.056} & \pos{-1.184} & \negval{+3.725} \\
+Swin-Transformer & 14.5 M & 17.150 & 2.144 & \textbf{3.118} & 11.888 \\
+\quad $\Delta$ (\textit{vs Transformer}) & & \negval{+3.962} & \negval{+0.104} & \pos{-3.227} & \negval{+6.323} \\
+\bottomrule
+\end{tabular}
+\vspace{0.2cm}
+\caption{\textbf{Ablation study of alternative architectures.} Neither the CNN+Transformer hybrid nor the Swin-Transformer outperformed the standard Transformer on overall CER. Although both alternatives reduced insertion-related errors, they produced higher substitution errors, suggesting that additional local or hierarchical structure did not improve fine-grained temporal alignment in CTC-based EMG transcription.}
+\label{tab:ablation_alt_arch}
+\end{table}
+
+As shown in Table~\ref{tab:ablation_alt_arch}, neither alternative architecture improved overall decoding performance relative to the standard Transformer. The CNN+Transformer achieved better insertion behavior than the standard Transformer, while the Swin-Transformer reduced insertion errors even further. However, in both cases these gains were offset by higher substitution errors, resulting in worse overall CER. In addition, for the Swin-Transformer, we observed that the validation CER reached 12.27, while the final test CER was noticeably higher, suggesting limited generalization and some degree of overfitting. This may be partly due to the substantially larger model size, which increases model capacity without necessarily improving robustness under our data scale and training setup. Overall, the alternative models changed the distribution of error types, but did not improve final transcription quality.
+
+We believe these results mainly reflect a mismatch between these architectures and the requirements of EMG-to-text decoding. This task expect a model architecture which able to preserve fine-grained temporal information for accurate CTC-based alignment. Thus architectural designs that impose additional locality, hierarchy, or intermediate feature compression may not always be helpful. For the CNN+Transformer, the extra convolutional stage may improve local smoothing but also reduce the model’s ability to preserve or recover precise detailed patterns, leading to more substitution errors. For the Swin-Transformer, the mismatch is likely more fundamental: Swin is designed for patchified, hierarchical inputs such as images, where local windows and progressive merging are natural and effective. In contrast, EMG is a continuous temporal biosignal, and window partitioning or hierarchical merging may blur the timing details needed to distinguish nearby character boundaries. Moreover, despite Swin-Transformer and CNN+Transformer having substantially more parameters, the models did not achieve better test performance, and the gap between validation and test CER suggests that its larger capacity may also have made generalization more difficult under our training setup and data scale. Overall, these findings suggest that for EMG decoding, preserving precise temporal structure is more important than introducing extra hybrid or vision-style hierarchical components, making the standard Transformer the better architectural match for this task.
+
+% Citations Please put into file references.bib
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
